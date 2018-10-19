@@ -1,0 +1,11 @@
+[package]
+name = "upquark"
+version = "0.1.0"
+authors = ["rchan"]
+
+[dependencies]
+actix = "0.7"
+actix-web = "0.7"
+
+futures = "0.1"
+dotenv = "0.13.0"
