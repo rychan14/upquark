@@ -1,40 +1,35 @@
 extern crate actix;
 extern crate actix_web;
-extern crate serde;
-extern crate serde_json;
-#[macro_use] extern crate serde_derive;
+extern crate env_logger;
 extern crate futures;
 // extern crate dotenv;
-#[macro_use] extern crate juniper;
+#[macro_use] 
+extern crate juniper;
+extern crate serde;
+extern crate serde_json;
+#[macro_use]
+extern crate serde_derive;
 
 // use std::env;
 use actix::prelude::*;
 use actix_web::{
-    App, 
-    AsyncResponder,
-    // Body,
-    // client,
-    Error, 
-    FutureResponse,
     fs,
     http,
-    // HttpMessage,
+    middleware,
+    server, 
+    App, 
+    AsyncResponder,
+    Error, 
+    FutureResponse,
     HttpRequest, 
     HttpResponse, 
     Json,
-    middleware,
-    server, 
     State,
 };
-// use actix_web::http::StatusCode;
+use futures::future::Future;
 use fs::NamedFile;
 use juniper::http::graphiql::graphiql_source;
 use juniper::http::GraphQLRequest;
-use futures::future::{
-    Future,
-    // Stream,
-};
-// use dotenv::dotenv;
 
 mod schema;
 
@@ -42,9 +37,10 @@ use schema::create_schema;
 use schema::Schema;
 
 struct AppState {
-    executor: Addr<GraphQLExecutor>
+    executor: Addr<GraphQLExecutor>,
 }
 
+#[derive(Serialize, Deserialize)]
 pub struct GraphQLData(GraphQLRequest);
 
 impl Message for GraphQLData {
@@ -79,7 +75,7 @@ fn index(_req: &HttpRequest) -> Result<NamedFile, Error> {
     Ok(NamedFile::open("ui/dist/index.html")?)
 }
 
-fn graphiql(_req: &HttpRequest<AppState>,) -> Result<HttpResponse, Error> {
+fn graphiql(_req: &HttpRequest<AppState>) -> Result<HttpResponse, Error> {
     let html = graphiql_source("http://127.0.0.1:3000/graphql");
     Ok(HttpResponse::Ok()
         .content_type("text/html; charset=utf-8")
@@ -100,29 +96,40 @@ fn graphql((st, data): (State<AppState>, Json<GraphQLData>),) -> FutureResponse<
         .responder()
 }
 
+fn app() -> App<> {
+    App::new()
+        .resource("/", |r| r.f(index))
+        .handler("/img", fs::StaticFiles::new("ui/dist/img").expect("fail to handle static images"))
+        .handler("/js", fs::StaticFiles::new("ui/dist/js").expect("fail to handle static js"))
+        .handler("/css", fs::StaticFiles::new("ui/dist/css").expect("fail to handle static css"))
+        .handler("/", fs::StaticFiles::new("ui/dist").expect("fail to handle static files"))
 
-fn main() {
-    let host = "127.0.0.1:3000";
-    // dotenv().ok();
-    let sys = actix::System::new("upquark");
+}
+
+fn graphql_app() -> App<AppState> {
     let schema = std::sync::Arc::new(create_schema());
     let addr = SyncArbiter::start(3, move || GraphQLExecutor::new(schema.clone()));
+    App::with_state(AppState{executor: addr.clone()})
+        .prefix("api")
+        .middleware(middleware::Logger::default())
+        .resource("/graphql", |r| r.method(http::Method::POST).with(graphql))
+        .resource("/graphiql", |r| r.method(http::Method::GET).h(graphiql))
 
+}
+
+fn main() {
+    ::std::env::set_var("RUST_LOG", "actix_web=info");
+    env_logger::init();
+    let host = "localhost:3000";
+    let sys = actix::System::new("upquark");
     server::new(move || {
         vec![
-            App::new()
-                .resource("/", |r| r.f(index))
-                .handler("/img", fs::StaticFiles::new("ui/dist/img").expect("fail to handle static images"))
-                .handler("/js", fs::StaticFiles::new("ui/dist/js").expect("fail to handle static js"))
-                .handler("/css", fs::StaticFiles::new("ui/dist/css").expect("fail to handle static css"))
-                .handler("/", fs::StaticFiles::new("ui/dist").expect("fail to handle static files")),
-            App::with_state(AppState{executor: addr.clone()})
-                .middleware(middleware::Logger::default())
-                .resource("/graphql", |r| r.method(http::Method::POST).with(graphql))
-                .resource("/graphiql", |r| r.method(http::Method::GET).h(graphiql))
+            graphql_app().boxed(),
+            app().boxed(),
         ]
-    }).bind(host).expect(&format!("could not bind to {}", host))
-    .start();
+    }).bind(host)
+        .expect(&format!("could not bind to {}", host))
+        .start();
         
     println!("Starting http server: {}", host);
     let _ = sys.run();
